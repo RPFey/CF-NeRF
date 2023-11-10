@@ -1,8 +1,9 @@
-export CUDA_VISIBLE_DEVICES=6,7
+export CUDA_VISIBLE_DEVICES=0
 
+OBJ="statue"
 python run_nerf_uncertainty_NF.py \
-            --config configs/africa_ds.txt \
-            --expname 'africa' \
+            --config configs/${OBJ}_ds.txt \
+            --expname ${OBJ}_backup2 \
             --N_rand 512 \
             --N_samples 128 \
             --n_flows 4 \

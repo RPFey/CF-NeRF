@@ -1,6 +1,6 @@
-dataname = africa
-basedir = ./logs/NF
-datadir = /mnt/kostas-graid/datasets/boshu_nerf/CF_LF/africa
+dataname = statue
+basedir = ./logs/LF
+datadir = /mnt/kostas-graid/datasets/boshu_nerf/CF_LF/statue
 dataset_type = llff
 
 factor = 2

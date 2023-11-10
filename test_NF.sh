@@ -1,8 +1,8 @@
-export CUDA_VISIBLE_DEVICES=6,7
+export CUDA_VISIBLE_DEVICES=0
 
 python run_nerf_uncertainty_NF.py \
-            --config configs/basket_ds.txt \
-            --expname 'basket' \
+            --config configs/statue_ds.txt \
+            --expname 'statue_backup' \
             --N_rand 512 \
             --N_samples 128 \
             --n_flows 4 \
@@ -17,4 +17,5 @@ python run_nerf_uncertainty_NF.py \
             --netwidth 512 \
             --model 'NeRF_Flows' \
             --index_step -1 \
-            # --is_train \
+            --is_train \
+            --render_only 

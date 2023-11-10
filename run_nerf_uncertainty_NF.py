@@ -19,7 +19,7 @@ import cv2
 import math
 
 from skimage.metrics import structural_similarity as SSIM
-
+from run_nerf_helpers import sparsification_plot
 from visualization_funcs import *
 
 # import torch.distributions as D
@@ -201,15 +201,17 @@ def render_path(render_poses, hwf, chunk, render_kwargs, gt_imgs=None, savedir=N
         for i, c2w in enumerate(tqdm(render_poses)):
             # print(i, time.time() - t)
             t = time.time()
-            rgb, disp, _ = render(H, W, focal, chunk=chunk, c2w=c2w[:3,:4], **render_kwargs)
+            rgb, disp, depth, _ = render(H, W, focal, chunk=chunk, c2w=c2w[:3,:4], **render_kwargs)
 
             # negative to positive
-            variance = torch.log(1 + torch.exp(var)) + 1e-05
+            n = depth.shape[-1]
+            depth_uncern = torch.std(depth, dim=-1) * n / (n-1)
+            depth_mean = torch.mean(depth, dim=-1)
             # variance = F.elu(var) + 1. 
-
+            rgb = torch.mean(rgb, dim=-1)
             rgbs.append(rgb.cpu().numpy())
-            variances.append(variance.cpu().numpy())
-            disps.append(disp.cpu().numpy())
+            # variances.append(variance.cpu().numpy())
+            disps.append(disp.mean(dim=-1).cpu().numpy())
 
             if i==0:
                 print(rgb.shape, disp.shape)
@@ -224,7 +226,13 @@ def render_path(render_poses, hwf, chunk, render_kwargs, gt_imgs=None, savedir=N
                 rgb8 = to8b(rgbs[-1])
                 filename = os.path.join(savedir, '{:03d}.png'.format(i))
                 imageio.imwrite(filename, rgb8)
-    
+
+                depth_uncern = depth_uncern.cpu().numpy()
+                depth = depth_mean.cpu().numpy()
+                
+                np.savez(os.path.join(savedir, 'uncern_{:03d}.npz'.format(i)), pred=depth_uncern)
+                np.savez(os.path.join(savedir, 'depth_{:03d}.npz'.format(i)), pred=depth)
+
     else:
         c2w = render_poses[:3,:4]
         rgb, disp, extras = render(H, W, focal, chunk=chunk, c2w=c2w[:3,:4], **render_kwargs)
@@ -237,11 +245,8 @@ def render_path(render_poses, hwf, chunk, render_kwargs, gt_imgs=None, savedir=N
 
     rgbs = np.stack(rgbs, 0)
     disps = np.stack(disps, 0)
-    pts = np.stack(pts, 0)
-    alpha = np.stack(alpha, 0)
-    rgb_mean = np.stack(rgb_mean, 0)
 
-    return rgbs, disps, pts, alpha, rgb_mean
+    return rgbs, disps
 
 
 def render_path_train(render_poses, hwf, chunk, render_kwargs, gt_imgs=None, savedir=None, render_factor=0):
@@ -603,7 +608,7 @@ def config_parser():
                         help='number of rays processed in parallel, decrease if running out of memory')
     parser.add_argument("--netchunk_per_gpu", type=int, default=1024*64, 
                         help='number of pts sent through network in parallel, decrease if running out of memory')
-    parser.add_argument("--no_batching", action='store_true', 
+    parser.add_argument("--no_batching", action='store_true', default = False, 
                         help='only take random rays from 1 image at a time')
     parser.add_argument("--no_reload", action='store_true', 
                         help='do not reload weights from saved ckpt')
@@ -718,7 +723,6 @@ def config_parser():
 
     return parser
 
-
 def train(args):
 
     # Multi-GPU
@@ -761,9 +765,9 @@ def train(args):
         
         elif args.dataname == 'statue':
             # 5 views
-            i_train = list(np.arange(67,76,2))
-            i_val_internal = list(np.arange(68,76,2))
-            i_val = list(np.arange(68,76,2))
+            i_train = list(np.arange(0, images.shape[0], 10))
+            i_val_internal = list(np.arange(68, 76, 2))
+            i_val = list(np.arange(68, 76, 2))
         
         elif args.dataname == 'torch':
             # 5 views
@@ -802,6 +806,8 @@ def train(args):
 
     if args.render_test:
         render_poses = np.array(poses[i_test])
+    else:
+        render_poses = np.array(poses[i_val])
 
     # Create log dir and copy the config file
     os.makedirs(os.path.join(args.basedir, args.dataname, args.type_flows, args.expname), exist_ok=True)
@@ -838,13 +844,13 @@ def train(args):
                 images = images[i_test]
             else:
                 # Default is smoother render_poses path
-                images = None
+                images = images[i_val]
 
             testsavedir = os.path.join(args.basedir, args.dataname, args.type_flows, args.expname, 'renderonly_{}_{:06d}'.format('test' if args.render_test else 'path', start))
             os.makedirs(testsavedir, exist_ok=True)
             print('test poses shape', render_poses.shape)
 
-            rgbs, _ = render_path(render_poses, hwf, args.chunk, render_kwargs_test, gt_imgs=images, savedir=testsavedir, render_factor=args.render_factor)
+            rgbs, dips = render_path(render_poses, hwf, args.chunk, render_kwargs_test, gt_imgs=images, savedir=testsavedir, render_factor=args.render_factor)
             print('Done rendering', testsavedir)
             imageio.mimwrite(os.path.join(testsavedir, 'video.mp4'), to8b(rgbs), fps=30, quality=8)
 
@@ -868,7 +874,7 @@ def train(args):
         # train
         rays_rgb_train = np.stack([rays_rgb[i] for i in i_train], 0) # train images only
         rays_rgb_train = np.reshape(rays_rgb_train, [-1,3,3]) # [(N-1)*H*W, ro+rd+rgb, 3]
-        rays_rgb_train = rays_rgb_train.astype(np.float)
+        rays_rgb_train = rays_rgb_train.astype(np.float32)
         print('rays_rgb_train.shape:', rays_rgb_train.shape)
         print('shuffle rays')
         np.random.shuffle(rays_rgb_train)
@@ -876,7 +882,7 @@ def train(args):
         # val
         rays_rgb_val = np.stack([rays_rgb[i] for i in i_val_internal], 0) # val images only
         rays_rgb_val = np.reshape(rays_rgb_val, [-1,3,3]) # [(N-1)*H*W, ro+rd+rgb, 3]
-        rays_rgb_val = rays_rgb_val.astype(np.float)
+        rays_rgb_val = rays_rgb_val.astype(np.float32)
         print('shuffle rays')
         np.random.shuffle(rays_rgb_val)
 
@@ -903,7 +909,7 @@ def train(args):
             print('rays_weights max:', np.max(rays_depth[:,3,0]))
             print('rays_weights min:', np.min(rays_depth[:,3,0]))
             print('rays_depth.shape:', rays_depth.shape)
-            rays_depth = rays_depth.astype(np.float)
+            rays_depth = rays_depth.astype(np.float32)
             print('shuffle depth rays')
             np.random.shuffle(rays_depth)
             i_batch_depth = 0
